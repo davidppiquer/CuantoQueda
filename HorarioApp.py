@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk
 import datetime
 import time
+import re
 
 class HorarioApp:
     def __init__(self, root):
@@ -128,40 +129,40 @@ class HorarioApp:
         
     def obtener_clase_actual(self):
         ahora = datetime.datetime.now()
-        hora_actual = ahora.hour + ahora.minute/60
-        
-        dia_semana = ahora.weekday()  # 0=Lunes, 1=Martes, ..., 4=Viernes
-        
-        for i, horario in enumerate(self.horarios):
-            hora_inicio_str = horario['hora']
-            hora_inicio = datetime.datetime.strptime(hora_inicio_str, "%H:%M")
-            hora_inicio_decimal = hora_inicio.hour + hora_inicio.minute/60
-            
-            # Calcular hora de fin
-            hora_fin_decimal = hora_inicio_decimal + horario['duracion']/60
-            
-            if hora_inicio_decimal <= hora_actual < hora_fin_decimal:
-                # Estamos en esta clase
-                dias = ['lunes', 'martes', 'miercoles', 'jueves', 'viernes']
-                if dia_semana < 5:  # Solo días de clase (L-V)
-                    clase_actual = horario[dias[dia_semana]]
-                    tiempo_restante = (hora_fin_decimal - hora_actual) * 60  # en minutos
-                    return clase_actual, tiempo_restante, horario['hora'], horario['duracion']
-        
+        # Solo días lectivos (0..4)
+        dia_semana = ahora.weekday()
+        if dia_semana >= 5:
+            return None, 0, "", 0
+
+        dias = ['lunes', 'martes', 'miercoles', 'jueves', 'viernes']
+        for horario in self.horarios:
+            # parsear hora de inicio (ej. "8:30" o "08:30")
+            try:
+                h, m = horario['hora'].split(':')
+            except ValueError:
+                continue
+            hora_inicio = ahora.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
+            hora_fin = hora_inicio + datetime.timedelta(minutes=horario['duracion'])
+
+            if hora_inicio <= ahora < hora_fin:
+                clase_actual = horario[dias[dia_semana]]
+                tiempo_restante_segundos = int((hora_fin - ahora).total_seconds())
+                return clase_actual, tiempo_restante_segundos, horario['hora'], horario['duracion']
+
         return None, 0, "", 0
     
     def actualizar_tiempo(self):
         clase_actual, tiempo_restante, hora_inicio, duracion = self.obtener_clase_actual()
         
         if clase_actual:
-            # Extraer código del módulo
-            codigo = clase_actual.split()[0]
+            # Extraer código del módulo de forma robusta
+            codigo = self.obtener_codigo_clase(clase_actual)
             nombre_modulo = self.modulos.get(codigo, "Módulo no identificado")
             profesor = self.profesores.get(codigo, "Profesor no identificado")
             
-            # Formatear tiempo restante
-            minutos = int(tiempo_restante)
-            segundos = int((tiempo_restante - minutos) * 60)
+            # tiempo_restante en segundos -> formatear mm:ss
+            minutos = tiempo_restante // 60
+            segundos = tiempo_restante % 60
             
             texto = f"CLASE ACTUAL: {nombre_modulo}\n"
             texto += f"Profesor: {profesor} | Hora: {hora_inicio} ({duracion} min)\n"
@@ -169,10 +170,10 @@ class HorarioApp:
             
             self.label_tiempo.config(text=texto)
             
-            # Cambiar color según el tiempo restante
-            if tiempo_restante < 5:
+            # Cambiar color según el tiempo restante (comparar en segundos)
+            if tiempo_restante < 5 * 60:
                 self.frame_tiempo.configure(bg='#e74c3c')  # Rojo para poco tiempo
-            elif tiempo_restante < 15:
+            elif tiempo_restante < 15 * 60:
                 self.frame_tiempo.configure(bg='#f39c12')  # Naranja para tiempo medio
             else:
                 self.frame_tiempo.configure(bg='#3498db')  # Azul para tiempo suficiente
@@ -185,7 +186,22 @@ class HorarioApp:
         
         # Actualizar cada segundo
         self.root.after(1000, self.actualizar_tiempo)
-    
+
+    def obtener_codigo_clase(self, clase):
+        """Buscar la clave del módulo dentro del texto de la clase (respetando 'CM0 II', '0179asir 2', etc.)."""
+        texto = clase.upper()
+        # Intentar emparejar por coincidencia de clave conocida (prefiriendo claves más largas)
+        for key in sorted(self.modulos.keys(), key=len, reverse=True):
+            if key.upper() in texto:
+                return key
+        # Si no coincide, buscar dígitos (0377, 1710...)
+        m = re.search(r'\d{3,4}', texto)
+        if m:
+            return m.group(0)
+        # Fallback: primer token
+        token = texto.split()[0] if texto.split() else clase
+        return token
+
     def mostrar_detalles(self, event):
         # Obtener elemento seleccionado
         item = self.tabla.selection()
@@ -202,27 +218,21 @@ class HorarioApp:
             # Obtener información de la clase seleccionada
             hora = valores[0]
             columna = self.tabla.identify_column(event.x)
-            
-            if columna == '#1':
-                clase = valores[1]  # Lunes
-                dia = "Lunes"
-            elif columna == '#2':
-                clase = valores[2]  # Martes
-                dia = "Martes"
-            elif columna == '#3':
-                clase = valores[3]  # Miércoles
-                dia = "Miércoles"
-            elif columna == '#4':
-                clase = valores[4]  # Jueves
-                dia = "Jueves"
-            elif columna == '#5':
-                clase = valores[5]  # Viernes
-                dia = "Viernes"
-            else:
+            try:
+                idx = int(columna.replace('#', '')) - 1
+            except Exception:
                 return
+            # idx == 0 -> columna HORA -> no mostrar detalles
+            if idx <= 0:
+                return
+            dias = ["Hora", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
+            if idx < 0 or idx >= len(valores):
+                return
+            clase = valores[idx]
+            dia = dias[idx]
             
             if clase:
-                codigo = clase.split()[0]
+                codigo = self.obtener_codigo_clase(clase)
                 nombre_modulo = self.modulos.get(codigo, "Módulo no identificado")
                 profesor = self.profesores.get(codigo, "Profesor no identificado")
                 
